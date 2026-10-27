@@ -334,6 +334,8 @@ def convert_regex_escapes(line):
             escape = True
         elif c in ("(", ")", "[", "]", "{", "}", ".", "*", "+", "^", "$"):
             cs.append("\\" + c)
+        elif c == "/":
+            cs.append("[/\\\\]+")
         else:
             cs.append(c)
     # accept carriage-return(s) before final newline
