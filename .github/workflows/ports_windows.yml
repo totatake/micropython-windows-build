@@ -2,9 +2,8 @@ name: windows port
 
 on:
   push:
-  pull_request:
     paths:
-      - '.github/workflows/*.yml'
+      - '.github/workflows/ports_windows.yml'
       - 'tools/**'
       - 'py/**'
       - 'extmod/**'
@@ -12,6 +11,22 @@ on:
       - 'lib/**'
       - 'ports/unix/**'
       - 'ports/windows/**'
+      - 'tests/**'
+    tags:
+      - 'v*-windows*'
+      - 'v*-win*'
+  pull_request:
+    paths:
+      - '.github/workflows/ports_windows.yml'
+      - 'tools/**'
+      - 'py/**'
+      - 'extmod/**'
+      - 'shared/**'
+      - 'lib/**'
+      - 'ports/unix/**'
+      - 'ports/windows/**'
+      - 'tests/**'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -87,6 +102,15 @@ jobs:
       if: failure() && steps.test_mpy.conclusion == 'failure'
       working-directory: tests
       run: python run-tests.py --print-failures
+    - name: Upload micropython binary
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: micropython-windows-vs-${{ matrix.platform }}-${{ matrix.configuration }}-${{ matrix.variant }}-vs${{ matrix.visualstudio }}
+        path: |
+          ${{ steps.get_path.outputs.micropython }}
+          mpy-cross/build/mpy-cross.exe
+        if-no-files-found: warn
 
   build-mingw:
     strategy:
@@ -136,6 +160,15 @@ jobs:
       if: failure() && steps.test.conclusion == 'failure'
       working-directory: tests
       run: python run-tests.py --print-failures
+    - name: Upload micropython binary
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: micropython-windows-mingw-${{ matrix.sys }}-${{ matrix.variant }}
+        path: |
+          ports/windows/build-${{ matrix.variant }}/micropython.exe
+          mpy-cross/build/mpy-cross.exe
+        if-no-files-found: warn
 
   cross-build-on-linux:
     runs-on: ubuntu-latest
@@ -145,3 +178,68 @@ jobs:
       run: tools/ci.sh windows_setup
     - name: Build
       run: tools/ci.sh windows_build
+    - name: Prepare binaries
+      run: |
+        cp ports/windows/build-standard/micropython.exe ports/windows/micropython-cross-x86.exe
+        cp ports/windows/build-standard-w64/micropython.exe ports/windows/micropython-cross-x64.exe
+    - name: Upload micropython binary
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: micropython-windows-cross-linux
+        path: |
+          ports/windows/micropython-cross-x86.exe
+          ports/windows/micropython-cross-x64.exe
+        if-no-files-found: warn
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-vs, build-mingw, cross-build-on-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+      - name: Prepare release assets
+        run: |
+          mkdir -p dist
+          target_artifacts=(
+            "micropython-windows-vs-x64-Release-standard-vs2022"
+            "micropython-windows-vs-x64-Debug-dev-vs2022"
+          )
+          for name in "${target_artifacts[@]}"; do
+            dir="artifacts/${name}"
+            if [ -d "$dir" ]; then
+              declare -A seen_basenames=()
+              unique_files=()
+              while IFS= read -r file; do
+                base=$(basename "$file")
+                if [[ -z "${seen_basenames[$base]}" ]]; then
+                  seen_basenames["$base"]=1
+                  unique_files+=("$file")
+                fi
+              done < <(find "$dir" -type f)
+
+              if [ ${#unique_files[@]} -gt 0 ]; then
+                zip -j "dist/${name}.zip" "${unique_files[@]}"
+              fi
+            fi
+          done
+          ls -la dist/
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release already exists. Uploading assets..."
+            gh release upload "${{ github.ref_name }}" dist/*.zip --clobber
+          else
+            echo "Creating new release..."
+            gh release create "${{ github.ref_name }}" dist/*.zip \
+              --title "MicroPython ${{ github.ref_name }}" \
+              --generate-notes
+          fi
